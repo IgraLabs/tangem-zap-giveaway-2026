@@ -13,7 +13,9 @@ The result is fixed by four public values:
 | **draw-script commit** | the git commit of `draw.mjs` at release (announced) |
 
 ```
-seed     = blake2b256( DOMAIN ‖ beacon_hash ‖ csv_sha256 ‖ draw_script_commit )
+# NB: blake2b256 here = BLAKE2b-512(x)[0:32] — the 512-bit digest truncated to 32
+# bytes, NOT parameterized BLAKE2b-256. Reproduce with BLAKE2b(x, 64B)[0:32].
+seed     = BLAKE2b-512( DOMAIN ‖ beacon_hash ‖ csv_sha256 ‖ draw_script_commit )[0:32]
 ranking  = Fisher–Yates(eligible_wallets.csv, seed)   # rejection-sampled, unbiased
 winners  = ranking[0..10]        # the 10 winners
 reserve  = ranking[10..]         # complete reserve order, in rank sequence
@@ -24,7 +26,7 @@ reserve  = ranking[10..]         # complete reserve order, in rank sequence
 | | |
 |---|---|
 | **Target** | **`daaScore ≥ 514,900,000`** on **Kaspa mainnet** |
-| **Rule** | the **first block on the virtual selected-parent chain (VSPC)** whose `daaScore` is **≥ 514,900,000** |
+| **Rule** | the **first confirmed block on the virtual selected-parent chain (VSPC)** whose `daaScore` is **≥ 514,900,000** (resolver walks the VSPC in pages) |
 | **Confirmation depth** | **4,320 DAA** — the beacon is used only once the chain sink is `≥ beacon.daaScore + 4320` (~7 min at 10 bps): this depth plus independent-node comparison materially reduces stale-chain and reorganization risk (PoW confirmation is probabilistic, not absolute) |
 | **Estimated time** | ~16 Aug 2026, ~20:00 UTC (approximate — the **score**, not the clock, is authoritative) |
 
@@ -62,8 +64,12 @@ public node may need a retry; that is a liveness hiccup, not a correctness issue
 You may also spot-check the block on any explorer — it must be a chain block with the
 reported `daaScore`/`blueScore`.
 
-Record from the output: `beacon_hash`, `beacon_daa_score`, `beacon_blue_score`,
-`sink_daa_score`.
+**Save each node's JSON to a file** — these are the *attestations* the draw checks:
+
+```bash
+vspc-beacon --rpc grpc://<NODE_A>:16110 --target 514900000 --depth 4320 --json > att_a.json
+vspc-beacon --rpc grpc://<NODE_B>:16110 --target 514900000 --depth 4320 --json > att_b.json
+```
 
 ## Step 2 — verify the candidate list
 
@@ -74,26 +80,36 @@ shasum -a 256 -c sha256.txt        # eligible_wallets.csv (+ scripts) must all s
 `draw.mjs` also re-verifies this internally and refuses to run on a tampered or
 malformed list.
 
-## Step 3 — run the draw
+## Step 3 — run the draw (two-node provenance gate)
+
+Point the draw at **both** attestation files. It **proves the two independent nodes
+agree** on the beacon (hash + daaScore + blueScore), that both are `confirmed`, and
+that they came from *different* RPCs — then derives the beacon from that consensus,
+not from a single trusted input:
 
 ```bash
-BEACON_HASH=<beacon_hash> \
-BEACON_DAASCORE=<beacon_daa_score> \
-BEACON_BLUESCORE=<beacon_blue_score> \
-SINK_DAASCORE=<sink_daa_score> \
-DRAW_SCRIPT_COMMIT=<announced git commit of draw.mjs> \
+BEACON_ATTESTATIONS="att_a.json,att_b.json" \
+DRAW_SCRIPT_COMMIT=<announced full commit hash of draw.mjs> \
 node draw.mjs
 ```
 
-`draw.mjs` re-checks `beacon_daa_score ≥ 514,900,000` and the 4,320-DAA confirmation
-gate, derives the seed, and prints JSON with `winners` (10) and `reserve_order` (the
-rest, in reserve rank sequence). Run by anyone with the same inputs, it yields the
-**identical** winners and reserve order.
+`draw.mjs` cross-checks the attestations, re-checks `beacon_daa_score ≥ 514,900,000`
+and the 4,320-DAA confirmation gate (against the **smallest** sink across nodes),
+derives the seed, and prints JSON with `winners` (10), `reserve_order`, and
+`beacon.provenance: "attested"`. Run by anyone with the same attestations + list, it
+yields the **identical** winners and reserve order.
+
+> **Single-node fallback (not for the official draw):** the older
+> `BEACON_HASH=… BEACON_DAASCORE=… BEACON_BLUESCORE=… SINK_DAASCORE=…` env form still
+> works for a quick local check, but it is **un-attested** — the script prints a
+> warning and marks `provenance: "unattested"`, because a single supplied hash is not
+> proof it is the real first-qualifying VSPC block. The official result uses the
+> two-node attested path above.
 
 ## Step 4 (optional) — check the algorithm
 
 ```bash
-node --test        # 31 offline tests: determinism, unbiased selection (chi-square),
+node --test        # 41 offline tests: determinism, unbiased selection (chi-square),
                    # tamper/shape rejection, the 4-input seed, the confirmation gate,
                    # and a known-answer vector pinning the whole pipeline.
 ```

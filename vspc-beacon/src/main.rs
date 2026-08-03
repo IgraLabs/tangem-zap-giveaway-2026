@@ -56,14 +56,73 @@ async fn main() -> eyre::Result<()> {
     let sink_block = client.get_block(sink, false).await?;
     let sink_daa = sink_block.header.daa_score;
 
-    // 2. Full selected-parent chain from the pruning point up to the sink.
-    //    added_chain_block_hashes is ascending along the VSPC.
-    let chain = client
-        .get_virtual_chain_from_block(pruning_point, false, None)
-        .await?;
-    let hashes = chain.added_chain_block_hashes;
+    // Guard: the target cannot exceed the current sink — the beacon is not mined
+    // yet. sink_daa here is the AUTHORITATIVE tip from getBlockDagInfo, independent
+    // of the paginated chain walk below (so this is correct even if the walk would
+    // span many pages).
+    if args.target > sink_daa {
+        eyre::bail!(
+            "target {} is above the current sink daaScore {} — the beacon block is NOT mined yet; wait",
+            args.target, sink_daa
+        );
+    }
+
+    // 2. Walk the selected-parent chain from the pruning point, IN PAGES.
+    //    getVirtualChainFromBlock caps each response at mergeset_size_limit*10
+    //    added chain blocks (~2480 at 10 bps, ~1800 on mainnet) — a SINGLE call is
+    //    NOT the whole pruning-point->sink chain. We advance `walk` to the last
+    //    returned hash each page and accumulate until the target daaScore is
+    //    bracketed (last accumulated block's daaScore >= target) or we reach the
+    //    sink. added_chain_block_hashes is ascending, and daaScore is monotonic
+    //    along the chain, so the accumulated prefix stays sorted for the search.
+    async fn daa_of(client: &GrpcClient, h: RpcHash) -> eyre::Result<u64> {
+        Ok(client.get_block(h, false).await?.header.daa_score)
+    }
+    let mut hashes: Vec<RpcHash> = Vec::new();
+    let mut walk = pruning_point;
+    let mut bracketed = false;
+    // Bound the loop generously; ~2480/page over a 30-day chain is < ~11k pages.
+    for _page in 0..100_000u32 {
+        let page = client
+            .get_virtual_chain_from_block(walk, false, None)
+            .await?
+            .added_chain_block_hashes;
+        if page.is_empty() {
+            break; // reached the sink (no more added chain blocks)
+        }
+        let last = *page.last().unwrap();
+        hashes.extend(page);
+        // Did we pass the target within what we've accumulated so far?
+        if daa_of(&client, last).await? >= args.target {
+            bracketed = true;
+            break;
+        }
+        if last == walk {
+            break; // no forward progress → sink
+        }
+        walk = last;
+    }
     if hashes.is_empty() {
         eyre::bail!("empty virtual chain from pruning point {pruning_point}");
+    }
+
+    // The earliest retained chain block: if the target is below it, it is pruned.
+    let first_daa = daa_of(&client, hashes[0]).await?;
+    if args.target < first_daa {
+        eyre::bail!(
+            "target {} is below the earliest retained chain block daaScore {} (pruned); pick a higher target",
+            args.target, first_daa
+        );
+    }
+    // If we never bracketed the target even after walking to the sink, the target
+    // is between the last retained block and the sink but not yet chain-accepted —
+    // treat as not-yet-available rather than silently picking the wrong block.
+    if !bracketed {
+        let last_daa = daa_of(&client, *hashes.last().unwrap()).await?;
+        eyre::bail!(
+            "target {} not found on the retained VSPC (last retained daaScore {}, sink {}); wait for it to be chain-accepted, or the node's retention is short",
+            args.target, last_daa, sink_daa
+        );
     }
 
     // Helper: fetch a chain block's daaScore & blueScore by index.
@@ -75,22 +134,6 @@ async fn main() -> eyre::Result<()> {
         let h = hashes[i];
         let b = client.get_block(h, false).await?;
         Ok((b.header.daa_score, b.header.blue_score, h))
-    }
-
-    // Sanity: confirm the target is within [chain.first.daa, chain.last.daa].
-    let (first_daa, _, _) = daa_blue_at(&client, &hashes, 0).await?;
-    let (last_daa, _, _) = daa_blue_at(&client, &hashes, hashes.len() - 1).await?;
-    if args.target < first_daa {
-        eyre::bail!(
-            "target {} is below the earliest retained chain block daaScore {} (pruned); pick a higher target",
-            args.target, first_daa
-        );
-    }
-    if args.target > last_daa {
-        eyre::bail!(
-            "target {} is above the current sink daaScore {} — the beacon block is NOT mined yet; wait",
-            args.target, last_daa
-        );
     }
 
     // 3. Binary-search the first index with daaScore >= target (chain daa is monotonic).
@@ -106,20 +149,60 @@ async fn main() -> eyre::Result<()> {
     }
     let (beacon_daa, beacon_blue, beacon_hash) = daa_blue_at(&client, &hashes, lo).await?;
 
+    // POST-CONDITION (correctness guard). The leftmost binary search returns the
+    // chain-order-FIRST block with daaScore >= target, which is correct *iff* the
+    // accumulated chain's daaScore is non-decreasing. Two facts constrain this:
+    //   * daaScore(block) = daaScore(selected_parent) + (mergeset_size - non_daa),
+    //     and that added term is >= 0 — so along the VSPC daaScore is NON-DECREASING
+    //     (NOT strictly increasing: consecutive chain blocks CAN share a daaScore
+    //     when the added term is 0). So the correct check is `prev < target` OR
+    //     `prev == beacon_daa` (an equal-daaScore run straddling the boundary is
+    //     fine — leftmost still picks the chain-first one).
+    //   * a mid-walk reorg could splice a non-monotonic list; that we must catch.
+    // Prove: (a) the pick is >= target, and (b) the immediately preceding block is
+    // <= the pick (monotonic) and does not itself precede a smaller qualifying
+    // block (i.e. leftmost holds). Bail loudly on violation rather than return a
+    // silently-wrong beacon; the two-node agreement gate is the backstop.
+    if beacon_daa < args.target {
+        eyre::bail!(
+            "internal: selected block daaScore {} < target {} (chain changed mid-walk / reorg?); re-run",
+            beacon_daa, args.target
+        );
+    }
+    if lo > 0 {
+        let (prev_daa, _, _) = daa_blue_at(&client, &hashes, lo - 1).await?;
+        // Monotonic (non-decreasing) is required; a reorg could break it.
+        if prev_daa > beacon_daa {
+            eyre::bail!(
+                "internal: chain not monotonic at pick (prev daaScore {} > selected {}); reorg mid-walk? re-run",
+                prev_daa, beacon_daa
+            );
+        }
+        // Leftmost correctness: the block before must be strictly below target.
+        // (prev may EQUAL beacon_daa only if beacon_daa < target, which (a) already
+        // excluded — so at the boundary prev < target must hold.)
+        if prev_daa >= args.target {
+            eyre::bail!(
+                "internal: block before the selected one has daaScore {} >= target {} — search did not land leftmost (reorg mid-walk?); re-run",
+                prev_daa, args.target
+            );
+        }
+    }
+
     // 4. Confirmation.
     let confirmed = sink_daa >= beacon_daa.saturating_add(args.depth);
     let gap = sink_daa.saturating_sub(beacon_daa);
 
     if args.json {
         println!(
-            "{{\"rpc\":\"{}\",\"target\":{},\"beacon_hash\":\"{}\",\"beacon_daa_score\":{},\"beacon_blue_score\":{},\"sink_daa_score\":{},\"virtual_daa_score\":{},\"confirmation_gap\":{},\"depth\":{},\"confirmed\":{},\"chain_len\":{}}}",
+            "{{\"rpc\":\"{}\",\"target\":{},\"beacon_hash\":\"{}\",\"beacon_daa_score\":{},\"beacon_blue_score\":{},\"sink_daa_score\":{},\"virtual_daa_score\":{},\"confirmation_gap\":{},\"depth\":{},\"confirmed\":{},\"blocks_walked\":{}}}",
             args.rpc, args.target, beacon_hash, beacon_daa, beacon_blue,
             sink_daa, virtual_daa, gap, args.depth, confirmed, hashes.len()
         );
     } else {
         println!("node                : {}", args.rpc);
         println!("target daaScore     : {}", args.target);
-        println!("VSPC chain length   : {} (pruning_point -> sink)", hashes.len());
+        println!("VSPC blocks walked  : {} (pruning_point -> first block >= target, paginated)", hashes.len());
         println!("--- beacon (first VSPC block with daaScore >= target) ---");
         println!("beacon hash         : {}", beacon_hash);
         println!("beacon daaScore     : {}", beacon_daa);
