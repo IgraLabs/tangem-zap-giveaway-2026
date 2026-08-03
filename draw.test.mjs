@@ -194,12 +194,12 @@ test('crossCheckAttestations accepts >=2 INDEPENDENT agreeing confirmed nodes', 
 });
 
 test('crossCheckAttestations rejects fewer than 2 attestations', () => {
-  assert.throws(() => crossCheckAttestations([att()], OPT), /need >= 2 independent/);
-  assert.throws(() => crossCheckAttestations([], OPT), /need >= 2 independent/);
+  assert.throws(() => crossCheckAttestations([att()], OPT), /need >= 2 results from distinct endpoints/);
+  assert.throws(() => crossCheckAttestations([], OPT), /need >= 2 results from distinct endpoints/);
 });
 
 test('crossCheckAttestations rejects two attestations from the SAME rpc', () => {
-  assert.throws(() => crossCheckAttestations([att(), att()], OPT), /not independent: duplicate rpc/);
+  assert.throws(() => crossCheckAttestations([att(), att()], OPT), /endpoints not distinct: duplicate rpc/);
 });
 
 test('crossCheckAttestations rejects a beacon-hash disagreement', () => {

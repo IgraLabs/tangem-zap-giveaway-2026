@@ -22,9 +22,11 @@ have gaps) or any hash tie-break a miner could grind.
    **first block with `daaScore ≥ target`**.
 4. Report its hash, `daaScore`, `blueScore`, the sink `daaScore`, and whether it
    is **confirmed**: `sink.daaScore ≥ beacon.daaScore + depth`. A stale/lagging
-   node therefore yields "not confirmed / wait", never a wrong block. The `target`
-   is checked against the authoritative sink, so a many-page walk cannot be
-   mistaken for "not mined yet".
+   node therefore yields "not confirmed / wait" rather than an unconfirmed result;
+   a post-condition guard bails loudly if a mid-walk reorg breaks monotonicity, and
+   the walk restarts from scratch if a page reports removed (reorged) chain blocks.
+   The `target` is checked against the authoritative sink, so a many-page walk
+   cannot be mistaken for "not mined yet".
 
 ## Build
 

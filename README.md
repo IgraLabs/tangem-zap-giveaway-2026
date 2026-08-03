@@ -108,9 +108,21 @@ and the resolved beacon hash are published after the draw. See
 ## Versioning
 
 The eligibility snapshot is tagged **`eligibility-v1.0`** — the immutable
-reference for who is eligible. The draw script is tagged **`draw-v1.0`**; that
-tag's commit is the `draw_script_commit` bound into the seed (resolve it with
-`git rev-list -n1 draw-v1.0`).
+reference for who is eligible.
+
+The draw script is tagged **`draw-v1.1`** (it supersedes `draw-v1.0`, which had a
+resolver bug — see the tag/release notes). The commit that `draw-v1.1` points to is
+the **`draw_script_commit`** bound into the seed. Its **full immutable hash is
+published in the `draw-v1.1` git tag annotation and the GitHub release** (a commit
+cannot contain its own hash, so it is announced there, not inside this file).
+Resolve and verify it yourself:
+
+```bash
+git rev-list -n1 draw-v1.1     # prints the full 40-hex draw_script_commit
+```
+
+Use exactly that hash as `DRAW_SCRIPT_COMMIT`. **Do not use `draw-v1.0`** — its
+commit `d13c057…` contains the pre-fix resolver.
 
 **After public commitment, corrections are not silent re-tags.** Once the list
 SHA-256, the draw-script commit, and the beacon target are published, an
@@ -151,10 +163,12 @@ node generate.mjs               # (eligibility) regenerate eligible_wallets.csv 
 shasum -c sha256.txt            # verify file integrity
 node --test                     # run the draw test suite (41 tests, offline, zero deps)
 
-# (draw) resolve the beacon on two independent kaspad nodes, then draw:
+# (draw) resolve the beacon on two DISTINCT kaspad endpoints, save each JSON,
+# then draw against both — the draw checks the two endpoints agree before running:
 cd vspc-beacon && cargo build --release && cd ..
-vspc-beacon/target/release/vspc-beacon --rpc grpc://<NODE>:16110 --target 514900000 --depth 4320 --json
-BEACON_HASH=… BEACON_DAASCORE=… BEACON_BLUESCORE=… SINK_DAASCORE=… DRAW_SCRIPT_COMMIT=… node draw.mjs
+vspc-beacon/target/release/vspc-beacon --rpc grpc://<NODE_A>:16110 --target 514900000 --depth 4320 --json > att_a.json
+vspc-beacon/target/release/vspc-beacon --rpc grpc://<NODE_B>:16110 --target 514900000 --depth 4320 --json > att_b.json
+BEACON_ATTESTATIONS="att_a.json,att_b.json" DRAW_SCRIPT_COMMIT=<full commit hash of draw-v1.1> node draw.mjs
 ```
 
 The draw's fairness-critical logic is tested in `draw.test.mjs` (41 tests): seed

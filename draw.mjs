@@ -13,7 +13,7 @@
 //      script re-verifies that hash and refuses to run on a tampered/malformed list.
 //   2. Announce the beacon by DAA SCORE. The beacon is the FIRST confirmed VSPC
 //      (virtual selected-parent chain) block with `daaScore >= BEACON_DAASCORE`.
-//      - VSPC = GHOSTDAG's single canonical chain (one block per position), so the
+//      - The confirmed VSPC is the deterministic, consensus-selected chain, so the
 //        selection is consensus-defined, not a convenient tie-break. It is resolved
 //        by kaspad's `getVirtualChainFromBlock` RPC (see the `vspc-beacon` tool),
 //        NOT by any REST endpoint (those lag the tip and have gaps).
@@ -183,19 +183,23 @@ export function validateBeacon(
   return { hash: h, daaScore: daa, blueScore: blue, sinkDaaScore: sink, confirmationGap: gap, depth, confirmed: true };
 }
 
-// PROVENANCE GATE (P2): prove the beacon is the real first-qualifying VSPC block by
-// requiring >= 2 INDEPENDENT `vspc-beacon --json` attestations that AGREE. This
-// closes the honor-system gap where a single supplied hash is trusted blindly.
+// AGREEMENT GATE (P2): CHECK AGREEMENT between >= 2 DISTINCT-endpoint
+// `vspc-beacon --json` results before drawing. This raises the bar above a single
+// blindly-trusted hash — but note it is NOT a cryptographic attestation: the JSON
+// and endpoint strings are unauthenticated, so an operator could point at two nodes
+// they control or fabricate both outputs. The property enforced is "two distinct
+// endpoints were queried and agree"; for honest, independently-chosen endpoints
+// (and a public re-run by any verifier) that makes a substituted beacon detectable.
 // `atts` is an array of parsed vspc-beacon JSON objects. Throws unless:
-//   - at least `minNodes` attestations are present,
-//   - they come from DISTINCT rpc endpoints (independent nodes),
+//   - at least `minNodes` results are present,
+//   - they come from DISTINCT rpc endpoints,
 //   - every one is `confirmed:true` and targets the announced daaScore,
 //   - they all agree on beacon_hash AND beacon_daa_score AND beacon_blue_score.
 // Returns the agreed beacon (validated via validateBeacon against the min sink seen,
-// so the depth gate uses the most conservative node).
+// so the depth gate uses the most conservative endpoint).
 export function crossCheckAttestations(atts, { target = BEACON_DAASCORE, depth = CONFIRMATION_DEPTH, minNodes = 2 } = {}) {
   if (!Array.isArray(atts) || atts.length < minNodes) {
-    throw new Error(`beacon provenance: need >= ${minNodes} independent vspc-beacon attestations, got ${Array.isArray(atts) ? atts.length : 0}`);
+    throw new Error(`beacon agreement: need >= ${minNodes} results from distinct endpoints, got ${Array.isArray(atts) ? atts.length : 0}`);
   }
   const rpcs = new Set();
   for (const [i, a] of atts.entries()) {
@@ -204,7 +208,7 @@ export function crossCheckAttestations(atts, { target = BEACON_DAASCORE, depth =
     }
     if (a.confirmed !== true) throw new Error(`attestation[${i}] (rpc ${a.rpc}) is not confirmed`);
     if (Number(a.target) !== target) throw new Error(`attestation[${i}] target ${a.target} != announced ${target}`);
-    if (rpcs.has(a.rpc)) throw new Error(`attestations not independent: duplicate rpc '${a.rpc}' — use two DIFFERENT nodes`);
+    if (rpcs.has(a.rpc)) throw new Error(`endpoints not distinct: duplicate rpc '${a.rpc}' — query two DIFFERENT endpoints`);
     rpcs.add(a.rpc);
   }
   const h0 = String(atts[0].beacon_hash).toLowerCase();
@@ -263,10 +267,12 @@ const INT = /^\d+$/;
 async function main() {
   const { addrs, csvHash } = loadEligible();
 
-  // Resolve the beacon. PREFERRED (provenance-gated): BEACON_ATTESTATIONS points at
-  // >= 2 independent `vspc-beacon --json` files; the draw proves they agree before
-  // using them. FALLBACK: raw BEACON_* env vars (un-attested — honor-system; prints
-  // a warning). The attested path makes two-node agreement the SOURCE of the beacon.
+  // Resolve the beacon. PREFERRED (agreement-checked): BEACON_ATTESTATIONS points at
+  // >= 2 `vspc-beacon --json` files from DISTINCT endpoints; the draw checks they
+  // agree before using them (see the note on crossCheckAttestations — this is an
+  // agreement check, not a cryptographic attestation). FALLBACK: raw BEACON_* env
+  // vars (single-endpoint; prints a warning). The checked path makes cross-endpoint
+  // agreement the SOURCE of the beacon.
   let beacon, provenance;
   const attEnv = (process.env.BEACON_ATTESTATIONS ?? '').trim();
   if (attEnv) {
@@ -287,7 +293,7 @@ async function main() {
       sinkDaaScore: reqEnv('SINK_DAASCORE', INT, 'sink daaScore at read time, integer'),
     });
     provenance = { mode: 'unattested', nodes: 1, rpcs: [] };
-    console.error('WARNING: beacon provenance is UN-ATTESTED (single supplied hash). For the real draw, set BEACON_ATTESTATIONS to >= 2 independent vspc-beacon --json outputs so the draw proves they agree.');
+    console.error('WARNING: single-endpoint beacon (no cross-endpoint agreement check). For the real draw, set BEACON_ATTESTATIONS to >= 2 vspc-beacon --json outputs from distinct endpoints so the draw checks they agree.');
   }
   const scriptCommit = reqEnv('DRAW_SCRIPT_COMMIT', HEX40, '40-hex git commit of this script at release').toLowerCase();
 
