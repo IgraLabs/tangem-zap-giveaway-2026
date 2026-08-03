@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // SPDX-License-Identifier: MIT
 // Reproducible generation of the ZAP-auction eligibility list for the
-// Tangem × Igra ZAP giveaway (2026).
+// Igra × Tangem ZAP giveaway (2026).
 //
 // Eligibility: an address qualifies if the GROSS sum of all its bids in the
 // IGRA ZAP auction is >= 500 iKAS. Amounts are summed in exact wei and the 500

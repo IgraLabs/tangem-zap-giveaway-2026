@@ -1,0 +1,24 @@
+[package]
+name = "vspc-beacon"
+version = "1.0.0"
+edition = "2021"
+description = "Resolve the Igra×Tangem draw beacon: first confirmed VSPC block with daaScore >= target, via kaspad getVirtualChainFromBlock RPC."
+license = "MIT"
+
+[[bin]]
+name = "vspc-beacon"
+path = "src/main.rs"
+
+[dependencies]
+# Kaspa RPC client. Pinned to the exact rusty-kaspa revision the draw was built
+# and tested against, so `cargo build` is reproducible for third parties.
+# A verifier who prefers upstream may repoint these at kaspanet/rusty-kaspa at a
+# revision whose gRPC RPC surface matches (getVirtualChainFromBlock, getBlock,
+# getBlockDagInfo) — the beacon rule is independent of which honest node answers.
+kaspa-grpc-client = { git = "https://github.com/IgraLabs/rusty-kaspa", rev = "0ae28f939e61994a11eb8eb6dd775255e2924afb" }
+kaspa-rpc-core    = { git = "https://github.com/IgraLabs/rusty-kaspa", rev = "0ae28f939e61994a11eb8eb6dd775255e2924afb" }
+
+clap  = { version = "4", features = ["derive"] }
+tokio = { version = "1", features = ["full"] }
+eyre  = "0.6"
+hex   = "0.4"
