@@ -73,34 +73,57 @@ async fn main() -> eyre::Result<()> {
     //    NOT the whole pruning-point->sink chain. We advance `walk` to the last
     //    returned hash each page and accumulate until the target daaScore is
     //    bracketed (last accumulated block's daaScore >= target) or we reach the
-    //    sink. added_chain_block_hashes is ascending, and daaScore is monotonic
+    //    sink. added_chain_block_hashes is ascending, and daaScore is non-decreasing
     //    along the chain, so the accumulated prefix stays sorted for the search.
+    //
+    //    REORG HANDLING: if any page reports non-empty `removed_chain_block_hashes`,
+    //    the node's selected chain changed mid-walk and blocks we already accumulated
+    //    may now be stale. Rather than splice removals into the prefix, we discard
+    //    everything and RESTART the walk from the pruning point (bounded attempts).
+    //    A clean full pass with zero removals yields a self-consistent chain; the
+    //    two-node agreement gate is the backstop if a node is reorg-thrashing.
     async fn daa_of(client: &GrpcClient, h: RpcHash) -> eyre::Result<u64> {
         Ok(client.get_block(h, false).await?.header.daa_score)
     }
     let mut hashes: Vec<RpcHash> = Vec::new();
-    let mut walk = pruning_point;
-    let mut bracketed = false;
-    // Bound the loop generously; ~2480/page over a 30-day chain is < ~11k pages.
-    for _page in 0..100_000u32 {
-        let page = client
-            .get_virtual_chain_from_block(walk, false, None)
-            .await?
-            .added_chain_block_hashes;
-        if page.is_empty() {
-            break; // reached the sink (no more added chain blocks)
+    let mut bracketed;
+    let mut reorg_restarts = 0u32;
+    'walk: loop {
+        hashes.clear();
+        bracketed = false;
+        let mut walk = pruning_point;
+        // Bound per-pass pages generously; ~2480/page over a 30-day chain < ~11k pages.
+        for _page in 0..100_000u32 {
+            let resp = client.get_virtual_chain_from_block(walk, false, None).await?;
+            if !resp.removed_chain_block_hashes.is_empty() {
+                // Reorg observed mid-walk → restart from scratch (bounded).
+                reorg_restarts += 1;
+                if reorg_restarts > 10 {
+                    eyre::bail!(
+                        "chain kept reorging across {} full-walk restarts (node unstable?); \
+                         re-run later, or use a node that is settled at this depth",
+                        reorg_restarts
+                    );
+                }
+                continue 'walk;
+            }
+            let page = resp.added_chain_block_hashes;
+            if page.is_empty() {
+                break; // reached the sink (no more added chain blocks)
+            }
+            let last = *page.last().unwrap();
+            hashes.extend(page);
+            // Did we pass the target within what we've accumulated so far?
+            if daa_of(&client, last).await? >= args.target {
+                bracketed = true;
+                break;
+            }
+            if last == walk {
+                break; // no forward progress → sink
+            }
+            walk = last;
         }
-        let last = *page.last().unwrap();
-        hashes.extend(page);
-        // Did we pass the target within what we've accumulated so far?
-        if daa_of(&client, last).await? >= args.target {
-            bracketed = true;
-            break;
-        }
-        if last == walk {
-            break; // no forward progress → sink
-        }
-        walk = last;
+        break; // completed a full pass with no reorg
     }
     if hashes.is_empty() {
         eyre::bail!("empty virtual chain from pruning point {pruning_point}");

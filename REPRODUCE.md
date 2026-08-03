@@ -80,12 +80,15 @@ shasum -a 256 -c sha256.txt        # eligible_wallets.csv (+ scripts) must all s
 `draw.mjs` also re-verifies this internally and refuses to run on a tampered or
 malformed list.
 
-## Step 3 — run the draw (two-node provenance gate)
+## Step 3 — run the draw (two-endpoint agreement gate)
 
-Point the draw at **both** attestation files. It **proves the two independent nodes
-agree** on the beacon (hash + daaScore + blueScore), that both are `confirmed`, and
-that they came from *different* RPCs — then derives the beacon from that consensus,
-not from a single trusted input:
+Point the draw at **both** result files. It **checks agreement between the two
+distinct endpoints** on the beacon (hash + daaScore + blueScore), that both are
+`confirmed`, and that they came from *different* RPCs — then derives the beacon from
+that agreement, not from a single trusted input. (This is an agreement check across
+endpoints, **not** a cryptographic attestation — the JSON/endpoint strings are
+unauthenticated; its value is that any honest, independent re-run detects a
+substituted beacon.)
 
 ```bash
 BEACON_ATTESTATIONS="att_a.json,att_b.json" \
