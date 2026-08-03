@@ -16,7 +16,7 @@ The result is fixed by four public values:
 seed     = blake2b256( DOMAIN ‖ beacon_hash ‖ csv_sha256 ‖ draw_script_commit )
 ranking  = Fisher–Yates(eligible_wallets.csv, seed)   # rejection-sampled, unbiased
 winners  = ranking[0..10]        # the 10 winners
-reserve  = ranking[10..]         # complete fallback order, in rank sequence
+reserve  = ranking[10..]         # complete reserve order, in rank sequence
 ```
 
 ## The beacon (announced in advance)
@@ -87,7 +87,7 @@ node draw.mjs
 
 `draw.mjs` re-checks `beacon_daa_score ≥ 514,900,000` and the 4,320-DAA confirmation
 gate, derives the seed, and prints JSON with `winners` (10) and `reserve_order` (the
-rest, in fallback sequence). Run by anyone with the same inputs, it yields the
+rest, in reserve rank sequence). Run by anyone with the same inputs, it yields the
 **identical** winners and reserve order.
 
 ## Step 4 (optional) — check the algorithm

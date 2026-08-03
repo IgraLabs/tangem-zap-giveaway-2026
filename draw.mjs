@@ -32,7 +32,7 @@
 //                         ‖ draw_script_git_commit )     (the exact algorithm)
 //   4. Deterministic Fisher–Yates shuffle (seeded CSPRNG, rejection-sampled to
 //      remove modulo bias) → ranks ALL 346 addresses. The first 10 are the winners;
-//      ranks 11..346 are the complete reserve order (fallback in listed order).
+//      ranks 11..346 are the complete reserve order (used, in rank order, if a winner does not claim).
 //
 // ── How the beacon is supplied to this script ───────────────────────────────
 // This script does NOT resolve the Kaspa chain itself (Node cannot speak kaspad
@@ -227,7 +227,7 @@ async function main() {
   const seed = deriveSeed(beacon.hash, csvHash, scriptCommit);
   const ranking = rankAll(addrs, seed);
   const winners = ranking.slice(0, WINNERS);
-  const reserve = ranking.slice(WINNERS); // complete fallback order, ranks 11..N
+  const reserve = ranking.slice(WINNERS); // complete reserve order, ranks 11..N
 
   const out = {
     event: 'Igra x Tangem ZAP Giveaway 2026 — winner draw',

@@ -23,8 +23,9 @@ use kaspa_rpc_core::RpcHash;
 #[derive(Parser)]
 #[command(about = "Resolve the first confirmed VSPC block with daaScore >= target")]
 struct Args {
-    /// kaspad gRPC endpoint.
-    #[arg(long, default_value = "grpc://95.217.73.85:16110")]
+    /// kaspad gRPC endpoint, e.g. grpc://YOUR_KASPAD_HOST:16110 (required — point
+    /// this at a kaspad node you trust; use two independent nodes and compare).
+    #[arg(long)]
     rpc: String,
 
     /// Target DAA score (the announced beacon target).
