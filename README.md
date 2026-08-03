@@ -89,9 +89,9 @@ affects eligibility or odds.**
    materially reduces stale-chain and reorganization risk.** The block hash is
    proof-of-work, unknown until mined.
 3. **Seed — binds four public inputs:**
-   `seed = blake2b256( "tangem-igra-zap-2026-draw-v1" ‖ beacon_block_hash ‖ sha256(eligible_wallets.csv) ‖ draw_script_git_commit )`
-   The `draw-script commit` is the commit tagged **`draw-v1.0`** (`git rev-list -n1
-   draw-v1.0`), published now — before the beacon — so it is fixed in advance.
+   `seed = BLAKE2b-512( "tangem-igra-zap-2026-draw-v1" ‖ beacon_block_hash ‖ sha256(eligible_wallets.csv) ‖ draw_script_git_commit )[0:32]`
+   — **note:** this is the 512-bit BLAKE2b digest **truncated to its first 32 bytes**, *not* parameterized BLAKE2b-256 (they produce different output). To reproduce in another language, compute `BLAKE2b(x, 64-byte output)[0:32]`.
+   The `draw-script commit` is published as a **full immutable hash** below (in *Versioning*), not only the movable `draw-v1.0` tag.
 4. **Selection.** A deterministic Fisher–Yates shuffle (seeded CSPRNG,
    rejection-sampled to remove modulo bias) ranks all 346 addresses; ranks **1–10**
    are the **provisional winners**, and ranks **11…346** are the complete reserve
@@ -149,7 +149,7 @@ Full procedure in [`REPRODUCE.md`](./REPRODUCE.md). In short:
 ```bash
 node generate.mjs               # (eligibility) regenerate eligible_wallets.csv from public RPC
 shasum -c sha256.txt            # verify file integrity
-node --test                     # run the draw test suite (31 tests, offline, zero deps)
+node --test                     # run the draw test suite (41 tests, offline, zero deps)
 
 # (draw) resolve the beacon on two independent kaspad nodes, then draw:
 cd vspc-beacon && cargo build --release && cd ..
@@ -157,7 +157,7 @@ vspc-beacon/target/release/vspc-beacon --rpc grpc://<NODE>:16110 --target 514900
 BEACON_HASH=… BEACON_DAASCORE=… BEACON_BLUESCORE=… SINK_DAASCORE=… DRAW_SCRIPT_COMMIT=… node draw.mjs
 ```
 
-The draw's fairness-critical logic is tested in `draw.test.mjs` (31 tests): seed
+The draw's fairness-critical logic is tested in `draw.test.mjs` (41 tests): seed
 derivation and shuffle are deterministic, index selection is unbiased
 (chi-square), a tampered or malformed list is rejected (wrong header, bad
 address, duplicate, or unsorted all throw), the commitment lookup matches the

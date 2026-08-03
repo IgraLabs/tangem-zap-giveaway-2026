@@ -5,20 +5,26 @@ Resolves the **canonical, publicly verifiable entropy beacon** for the Igra × T
 `daaScore ≥ target`**, read directly from a kaspad node via the
 `getVirtualChainFromBlock` gRPC RPC.
 
-This is the consensus-canonical selection — GHOSTDAG picks exactly one block per
-chain position — so it does **not** depend on a convenient REST endpoint (those
-lag the tip and have gaps) or any hash tie-break a miner could grind.
+The confirmed VSPC provides the deterministic, consensus-selected chain used by this
+rule — so it does **not** depend on a convenient REST endpoint (those lag the tip and
+have gaps) or any hash tie-break a miner could grind.
 
 ## What it does
 
-1. `getBlockDagInfo` → the current sink (chain tip) and pruning point.
-2. `getVirtualChainFromBlock(start = pruning_point)` → the selected-parent chain
-   from the pruning point up to the sink (ascending `daaScore`).
-3. Binary-search that chain (daaScore is monotonic) for the **first block with
-   `daaScore ≥ target`** — fetching only ~log₂(N) block headers.
+1. `getBlockDagInfo` → the current sink (chain tip, authoritative for the depth gate)
+   and pruning point.
+2. `getVirtualChainFromBlock(start = …)` walked **in pages** — the node caps each
+   response at ~2,480 (10 bps) / ~1,800 (mainnet) added chain blocks, so a single
+   call is **not** the whole chain. The resolver advances the start to the last
+   returned hash each page, accumulating from the pruning point until the target
+   daaScore is bracketed (or the sink is reached).
+3. Binary-search the accumulated (ascending, monotonic-daaScore) prefix for the
+   **first block with `daaScore ≥ target`**.
 4. Report its hash, `daaScore`, `blueScore`, the sink `daaScore`, and whether it
    is **confirmed**: `sink.daaScore ≥ beacon.daaScore + depth`. A stale/lagging
-   node therefore yields "not confirmed / wait", never a wrong block.
+   node therefore yields "not confirmed / wait", never a wrong block. The `target`
+   is checked against the authoritative sink, so a many-page walk cannot be
+   mistaken for "not mined yet".
 
 ## Build
 

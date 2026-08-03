@@ -25,8 +25,10 @@
 //      The block hash is a proof-of-work output, unknown until mined. Igra cannot
 //      choose the hash after committing to the target; miner influence would require
 //      mining power and potentially sacrificing block rewards.
-//   3. Seed (binds FOUR independent public inputs):
-//        seed = blake2b256( DOMAIN
+//   3. Seed (binds FOUR independent public inputs). "blake2b256" here means
+//      BLAKE2b-512(x)[0:32] — the 512-bit digest truncated to 32 bytes, NOT
+//      parameterized BLAKE2b-256 (see the helper note below):
+//        seed = BLAKE2b-512(x)[0:32] where x = ( DOMAIN
 //                         ‖ beacon_block_hash            (Kaspa PoW entropy)
 //                         ‖ sha256(eligible_wallets.csv) (the exact frozen list)
 //                         ‖ draw_script_git_commit )     (the exact algorithm)
@@ -76,7 +78,16 @@ const EVM_ADDR     = /^0x[0-9a-f]{40}$/;        // lowercased 20-byte address
 
 // ── helpers (pure fns exported for offline tests; importing this module runs no draw) ──
 export const sha256hex  = (buf) => createHash('sha256').update(buf).digest('hex');
-export const blake2b256 = (buf) => createHash('blake2b512').update(buf).digest().subarray(0, 32);
+// IMPORTANT: this is BLAKE2b-512 truncated to its first 32 bytes — written
+// `BLAKE2b-512(x)[0:32]` — NOT parameterized BLAKE2b-256. The two differ:
+// parameterized BLAKE2b-256 encodes the 32-byte output length in the IV, yielding
+// a different digest. Node's built-in crypto only exposes blake2b512, so the
+// committed operation is the truncation, and every published formula says so.
+// To reproduce in another language, use BLAKE2b with 64-byte output and take the
+// first 32 bytes (do NOT set digest_size=32).
+export const blake2b512trunc32 = (buf) => createHash('blake2b512').update(buf).digest().subarray(0, 32);
+// Back-compat alias (same bytes); prefer the explicit name above.
+export const blake2b256 = blake2b512trunc32;
 
 // Parse the "<hash>  <file>" commitment text → the committed hash for `file`.
 // Matches on the EXACT path token, not a substring, so `draw.mjs` never
@@ -124,7 +135,7 @@ function loadEligible() {
 // Derive the draw seed from the FOUR bound inputs. STRICT hex validation: a
 // short/typo'd hex would be silently truncated by Buffer.from(...,'hex') → wrong
 // seed with no error, which is fatal on the verification path.
-//   seed = blake2b256( utf8(DOMAIN) ‖ beacon_hash ‖ csv_sha256 ‖ script_commit )
+//   seed = BLAKE2b-512( utf8(DOMAIN) ‖ beacon_hash ‖ csv_sha256 ‖ script_commit )[0:32]
 export function deriveSeed(beaconHashHex, csvHashHex, scriptCommitHex, domain = DOMAIN) {
   const bh = String(beaconHashHex).toLowerCase();
   const ch = String(csvHashHex).toLowerCase();
@@ -172,6 +183,43 @@ export function validateBeacon(
   return { hash: h, daaScore: daa, blueScore: blue, sinkDaaScore: sink, confirmationGap: gap, depth, confirmed: true };
 }
 
+// PROVENANCE GATE (P2): prove the beacon is the real first-qualifying VSPC block by
+// requiring >= 2 INDEPENDENT `vspc-beacon --json` attestations that AGREE. This
+// closes the honor-system gap where a single supplied hash is trusted blindly.
+// `atts` is an array of parsed vspc-beacon JSON objects. Throws unless:
+//   - at least `minNodes` attestations are present,
+//   - they come from DISTINCT rpc endpoints (independent nodes),
+//   - every one is `confirmed:true` and targets the announced daaScore,
+//   - they all agree on beacon_hash AND beacon_daa_score AND beacon_blue_score.
+// Returns the agreed beacon (validated via validateBeacon against the min sink seen,
+// so the depth gate uses the most conservative node).
+export function crossCheckAttestations(atts, { target = BEACON_DAASCORE, depth = CONFIRMATION_DEPTH, minNodes = 2 } = {}) {
+  if (!Array.isArray(atts) || atts.length < minNodes) {
+    throw new Error(`beacon provenance: need >= ${minNodes} independent vspc-beacon attestations, got ${Array.isArray(atts) ? atts.length : 0}`);
+  }
+  const rpcs = new Set();
+  for (const [i, a] of atts.entries()) {
+    for (const k of ['rpc', 'beacon_hash', 'beacon_daa_score', 'beacon_blue_score', 'sink_daa_score', 'target', 'confirmed']) {
+      if (a == null || a[k] === undefined) throw new Error(`attestation[${i}] missing field '${k}' (not a vspc-beacon --json output?)`);
+    }
+    if (a.confirmed !== true) throw new Error(`attestation[${i}] (rpc ${a.rpc}) is not confirmed`);
+    if (Number(a.target) !== target) throw new Error(`attestation[${i}] target ${a.target} != announced ${target}`);
+    if (rpcs.has(a.rpc)) throw new Error(`attestations not independent: duplicate rpc '${a.rpc}' — use two DIFFERENT nodes`);
+    rpcs.add(a.rpc);
+  }
+  const h0 = String(atts[0].beacon_hash).toLowerCase();
+  const daa0 = Number(atts[0].beacon_daa_score), blue0 = Number(atts[0].beacon_blue_score);
+  for (const [i, a] of atts.entries()) {
+    if (String(a.beacon_hash).toLowerCase() !== h0) throw new Error(`attestation[${i}] beacon_hash ${a.beacon_hash} disagrees with node 0 (${h0}) — nodes do not agree on the beacon`);
+    if (Number(a.beacon_daa_score) !== daa0) throw new Error(`attestation[${i}] beacon_daa_score disagrees`);
+    if (Number(a.beacon_blue_score) !== blue0) throw new Error(`attestation[${i}] beacon_blue_score disagrees`);
+  }
+  // Use the SMALLEST sink across nodes for the depth gate (most conservative).
+  const minSink = Math.min(...atts.map((a) => Number(a.sink_daa_score)));
+  const beacon = validateBeacon({ hash: h0, daaScore: daa0, blueScore: blue0, sinkDaaScore: minSink }, { target, depth });
+  return { ...beacon, nodes: atts.length, rpcs: [...rpcs] };
+}
+
 // ── Seeded CSPRNG: hash-chain blake2b(seed ‖ counter) → uniform u32 stream ───
 export function makeRng(seed32) {
   let ctr = 0n, pool = Buffer.alloc(0), off = 0;
@@ -215,13 +263,32 @@ const INT = /^\d+$/;
 async function main() {
   const { addrs, csvHash } = loadEligible();
 
-  // Gather the resolved-beacon inputs (produced by `vspc-beacon` against a node).
-  const beacon = validateBeacon({
-    hash:         reqEnv('BEACON_HASH', HEX64, '64-hex VSPC beacon block hash'),
-    daaScore:     reqEnv('BEACON_DAASCORE', INT, "beacon block's daaScore, integer"),
-    blueScore:    reqEnv('BEACON_BLUESCORE', INT, "beacon block's blueScore, integer"),
-    sinkDaaScore: reqEnv('SINK_DAASCORE', INT, 'sink daaScore at read time, integer'),
-  });
+  // Resolve the beacon. PREFERRED (provenance-gated): BEACON_ATTESTATIONS points at
+  // >= 2 independent `vspc-beacon --json` files; the draw proves they agree before
+  // using them. FALLBACK: raw BEACON_* env vars (un-attested — honor-system; prints
+  // a warning). The attested path makes two-node agreement the SOURCE of the beacon.
+  let beacon, provenance;
+  const attEnv = (process.env.BEACON_ATTESTATIONS ?? '').trim();
+  if (attEnv) {
+    const paths = attEnv.split(/[,\s]+/).filter(Boolean);
+    const atts = paths.map((p) => {
+      let raw;
+      try { raw = readFileSync(p, 'utf8'); } catch (e) { throw new Error(`cannot read attestation '${p}': ${e.message}`); }
+      try { return JSON.parse(raw); } catch (e) { throw new Error(`attestation '${p}' is not valid JSON (expect one line of vspc-beacon --json): ${e.message}`); }
+    });
+    const cc = crossCheckAttestations(atts, { target: BEACON_DAASCORE, depth: CONFIRMATION_DEPTH });
+    beacon = cc;
+    provenance = { mode: 'attested', nodes: cc.nodes, rpcs: cc.rpcs };
+  } else {
+    beacon = validateBeacon({
+      hash:         reqEnv('BEACON_HASH', HEX64, '64-hex VSPC beacon block hash'),
+      daaScore:     reqEnv('BEACON_DAASCORE', INT, "beacon block's daaScore, integer"),
+      blueScore:    reqEnv('BEACON_BLUESCORE', INT, "beacon block's blueScore, integer"),
+      sinkDaaScore: reqEnv('SINK_DAASCORE', INT, 'sink daaScore at read time, integer'),
+    });
+    provenance = { mode: 'unattested', nodes: 1, rpcs: [] };
+    console.error('WARNING: beacon provenance is UN-ATTESTED (single supplied hash). For the real draw, set BEACON_ATTESTATIONS to >= 2 independent vspc-beacon --json outputs so the draw proves they agree.');
+  }
   const scriptCommit = reqEnv('DRAW_SCRIPT_COMMIT', HEX40, '40-hex git commit of this script at release').toLowerCase();
 
   const seed = deriveSeed(beacon.hash, csvHash, scriptCommit);
@@ -246,9 +313,12 @@ async function main() {
       confirmation_depth: beacon.depth,
       confirmation_gap: beacon.confirmationGap,
       confirmed: beacon.confirmed,
+      provenance: provenance.mode,          // 'attested' (>=2 agreeing nodes) or 'unattested'
+      attesting_nodes: provenance.nodes,
+      attesting_rpcs: provenance.rpcs,
     },
     seed_hex: seed.toString('hex'),
-    method: 'seed = blake2b256(DOMAIN ‖ beacon_block_hash ‖ sha256(csv) ‖ draw_script_commit); Fisher-Yates (rejection-sampled); winners = first 10, reserve = ranks 11..N',
+    method: 'seed = BLAKE2b-512(DOMAIN ‖ beacon_block_hash ‖ sha256(csv) ‖ draw_script_commit)[0:32] (512-bit digest truncated to 32 bytes, NOT parameterized BLAKE2b-256); Fisher-Yates (rejection-sampled); winners = first 10, reserve = ranks 11..N',
     winners_count: winners.length,
     winners,
     reserve_count: reserve.length,

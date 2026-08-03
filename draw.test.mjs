@@ -15,9 +15,10 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import {
-  sha256hex, blake2b256, committedHashFor, parseEligible,
+  sha256hex, blake2b256, blake2b512trunc32, committedHashFor, parseEligible,
   deriveSeed, rankAll, computeWinners, makeRng, randBelow, shuffle,
-  validateBeacon, DOMAIN, BEACON_DAASCORE, CONFIRMATION_DEPTH, ANNOUNCED_DAASCORE, WINNERS,
+  validateBeacon, crossCheckAttestations,
+  DOMAIN, BEACON_DAASCORE, CONFIRMATION_DEPTH, ANNOUNCED_DAASCORE, WINNERS,
 } from './draw.mjs';
 
 // Fixed test vector: the real Kaspa mainnet VSPC block resolved in the
@@ -173,6 +174,69 @@ test('validateBeacon rejects malformed hash / non-integer scores', () => {
   assert.throws(() => validateBeacon(beac({ hash: 'xyz' }), { target: VEC_DAA }), /beacon hash must be 64 hex/);
   assert.throws(() => validateBeacon(beac({ daaScore: 'NaN' }), { target: VEC_DAA }), /must be a non-negative integer/);
   assert.throws(() => validateBeacon(beac({ sinkDaaScore: -5 }), { target: VEC_DAA }), /must be a non-negative integer/);
+});
+
+// ── crossCheckAttestations: the two-node PROVENANCE gate (P2) ──────────────────
+// A vspc-beacon --json output shape, all agreeing by default.
+const att = (over = {}) => ({
+  rpc: 'grpc://node-a:16110', target: VEC_DAA,
+  beacon_hash: VEC_HASH, beacon_daa_score: VEC_DAA, beacon_blue_score: VEC_BLUE,
+  sink_daa_score: VEC_SINK, confirmed: true, ...over,
+});
+const OPT = { target: VEC_DAA, depth: CONFIRMATION_DEPTH };
+
+test('crossCheckAttestations accepts >=2 INDEPENDENT agreeing confirmed nodes', () => {
+  const r = crossCheckAttestations([att(), att({ rpc: 'grpc://node-b:16110', sink_daa_score: VEC_SINK - 500 })], OPT);
+  assert.equal(r.confirmed, true);
+  assert.equal(r.hash, VEC_HASH);
+  assert.equal(r.nodes, 2);
+  assert.equal(r.sinkDaaScore, VEC_SINK - 500); // uses the SMALLEST sink (most conservative)
+});
+
+test('crossCheckAttestations rejects fewer than 2 attestations', () => {
+  assert.throws(() => crossCheckAttestations([att()], OPT), /need >= 2 independent/);
+  assert.throws(() => crossCheckAttestations([], OPT), /need >= 2 independent/);
+});
+
+test('crossCheckAttestations rejects two attestations from the SAME rpc', () => {
+  assert.throws(() => crossCheckAttestations([att(), att()], OPT), /not independent: duplicate rpc/);
+});
+
+test('crossCheckAttestations rejects a beacon-hash disagreement', () => {
+  const bad = att({ rpc: 'grpc://node-b:16110', beacon_hash: 'f'.repeat(64) });
+  assert.throws(() => crossCheckAttestations([att(), bad], OPT), /do not agree on the beacon/);
+});
+
+test('crossCheckAttestations rejects daa/blue disagreement even if hash matches', () => {
+  const b1 = att({ rpc: 'grpc://node-b:16110', beacon_daa_score: VEC_DAA + 1 });
+  assert.throws(() => crossCheckAttestations([att(), b1], OPT), /beacon_daa_score disagrees/);
+  const b2 = att({ rpc: 'grpc://node-b:16110', beacon_blue_score: VEC_BLUE + 1 });
+  assert.throws(() => crossCheckAttestations([att(), b2], OPT), /beacon_blue_score disagrees/);
+});
+
+test('crossCheckAttestations rejects an unconfirmed attestation', () => {
+  const un = att({ rpc: 'grpc://node-b:16110', confirmed: false });
+  assert.throws(() => crossCheckAttestations([att(), un], OPT), /is not confirmed/);
+});
+
+test('crossCheckAttestations rejects a target mismatch vs announced', () => {
+  const wrong = att({ rpc: 'grpc://node-b:16110', target: VEC_DAA + 1 });
+  assert.throws(() => crossCheckAttestations([att(), wrong], OPT), /target .* != announced/);
+});
+
+test('crossCheckAttestations rejects a malformed attestation (missing field)', () => {
+  const { beacon_hash, ...missing } = att({ rpc: 'grpc://node-b:16110' });
+  assert.throws(() => crossCheckAttestations([att(), missing], OPT), /missing field 'beacon_hash'/);
+});
+
+test('crossCheckAttestations still enforces the depth gate on the min sink', () => {
+  // both agree but the min sink is too close → NOT confirmed
+  const near = att({ rpc: 'grpc://node-b:16110', sink_daa_score: VEC_DAA + 10 });
+  assert.throws(() => crossCheckAttestations([att(), near], { target: VEC_DAA, depth: 4320 }), /NOT confirmed/);
+});
+
+test('blake2b512trunc32 is the same bytes as the blake2b256 alias', () => {
+  assert.deepEqual(blake2b512trunc32(Buffer.from('abc')), blake2b256(Buffer.from('abc')));
 });
 
 // ── RNG: determinism + unbiasedness ──────────────────────────────────────────
