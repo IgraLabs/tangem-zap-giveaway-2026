@@ -25,10 +25,10 @@ reserve  = ranking[10..]         # complete reserve order, in rank sequence
 
 | | |
 |---|---|
-| **Target** | **`daaScore ≥ 514,900,000`** on **Kaspa mainnet** |
-| **Rule** | the **first confirmed block on the virtual selected-parent chain (VSPC)** whose `daaScore` is **≥ 514,900,000** (resolver walks the VSPC in pages) |
+| **Target** | **`daaScore ≥ 518,150,000`** on **Kaspa mainnet** |
+| **Rule** | the **first confirmed block on the virtual selected-parent chain (VSPC)** whose `daaScore` is **≥ 518,150,000** (resolver walks the VSPC in pages) |
 | **Confirmation depth** | **4,320 DAA** — the beacon is used only once the chain sink is `≥ beacon.daaScore + 4320` (~7 min at 10 bps): this depth plus independent-node comparison materially reduces stale-chain and reorganization risk (PoW confirmation is probabilistic, not absolute) |
-| **Estimated time** | ~16 Aug 2026, ~20:00 UTC (approximate — the **score**, not the clock, is authoritative) |
+| **Estimated time** | ~20 Aug 2026, ~14:00 UTC (approximate — the **score**, not the clock, is authoritative) |
 
 Why VSPC-by-daaScore, and why depth:
 
@@ -55,8 +55,8 @@ Resolve against **two independently operated kaspad nodes** and confirm the hash
 matches:
 
 ```bash
-./target/release/vspc-beacon --rpc grpc://<NODE_A>:16110 --target 514900000 --depth 4320 --json
-./target/release/vspc-beacon --rpc grpc://<NODE_B>:16110 --target 514900000 --depth 4320 --json
+./target/release/vspc-beacon --rpc grpc://<NODE_A>:16110 --target 518150000 --depth 4320 --json
+./target/release/vspc-beacon --rpc grpc://<NODE_B>:16110 --target 518150000 --depth 4320 --json
 ```
 
 Both must print the **same** `beacon_hash` and `"confirmed": true`. (A capacity-capped
@@ -67,8 +67,8 @@ reported `daaScore`/`blueScore`.
 **Save each node's JSON to a file** — these are the *attestations* the draw checks:
 
 ```bash
-vspc-beacon --rpc grpc://<NODE_A>:16110 --target 514900000 --depth 4320 --json > att_a.json
-vspc-beacon --rpc grpc://<NODE_B>:16110 --target 514900000 --depth 4320 --json > att_b.json
+vspc-beacon --rpc grpc://<NODE_A>:16110 --target 518150000 --depth 4320 --json > att_a.json
+vspc-beacon --rpc grpc://<NODE_B>:16110 --target 518150000 --depth 4320 --json > att_b.json
 ```
 
 ## Step 2 — verify the candidate list
@@ -96,7 +96,7 @@ DRAW_SCRIPT_COMMIT=<announced full commit hash of draw.mjs> \
 node draw.mjs
 ```
 
-`draw.mjs` cross-checks the attestations, re-checks `beacon_daa_score ≥ 514,900,000`
+`draw.mjs` cross-checks the attestations, re-checks `beacon_daa_score ≥ 518,150,000`
 and the 4,320-DAA confirmation gate (against the **smallest** sink across nodes),
 derives the seed, and prints JSON with `winners` (10), `reserve_order`, and
 `beacon.provenance: "attested"`. Run by anyone with the same attestations + list, it

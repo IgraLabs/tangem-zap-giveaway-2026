@@ -77,10 +77,10 @@ affects eligibility or odds.**
 
    | | |
    |---|---|
-   | **Target** | **`daaScore ≥ 514,900,000`** (Kaspa mainnet) |
-   | **Rule** | the **first confirmed block on the virtual selected-parent chain (VSPC)** with `daaScore ≥ 514,900,000` |
+   | **Target** | **`daaScore ≥ 518,150,000`** (Kaspa mainnet) |
+   | **Rule** | the **first confirmed block on the virtual selected-parent chain (VSPC)** with `daaScore ≥ 518,150,000` |
    | **Confirmation depth** | **4,320 DAA** (~7 min) below the chain tip before the hash is used |
-   | **Est. time** | ~16 Aug 2026 ~20:00 UTC — *approximate; the score, not the clock, is authoritative* |
+   | **Est. time** | ~20 Aug 2026 ~14:00 UTC — *approximate; the score, not the clock, is authoritative* |
 
    The **confirmed VSPC provides the deterministic, consensus-selected chain used by
    this rule**, resolved via a kaspad node's `getVirtualChainFromBlock` RPC —
@@ -91,7 +91,7 @@ affects eligibility or odds.**
 3. **Seed — binds four public inputs:**
    `seed = BLAKE2b-512( "tangem-igra-zap-2026-draw-v1" ‖ beacon_block_hash ‖ sha256(eligible_wallets.csv) ‖ draw_script_git_commit )[0:32]`
    — **note:** this is the 512-bit BLAKE2b digest **truncated to its first 32 bytes**, *not* parameterized BLAKE2b-256 (they produce different output). To reproduce in another language, compute `BLAKE2b(x, 64-byte output)[0:32]`.
-   The `draw-script commit` is published as a **full immutable hash** below (in *Versioning*), not only the movable `draw-v1.0` tag.
+   The `draw-script commit` is published as a **full immutable hash** below (in *Versioning*), not only the movable `draw-v1.2` tag.
 4. **Selection.** A deterministic Fisher–Yates shuffle (seeded CSPRNG,
    rejection-sampled to remove modulo bias) ranks all 346 addresses; ranks **1–10**
    are the **provisional winners**, and ranks **11…346** are the complete reserve
@@ -110,19 +110,21 @@ and the resolved beacon hash are published after the draw. See
 The eligibility snapshot is tagged **`eligibility-v1.0`** — the immutable
 reference for who is eligible.
 
-The draw script is tagged **`draw-v1.1`** (it supersedes `draw-v1.0`, which had a
-resolver bug — see the tag/release notes). The commit that `draw-v1.1` points to is
-the **`draw_script_commit`** bound into the seed. Its **full immutable hash is
-published in the `draw-v1.1` git tag annotation and the GitHub release** (a commit
-cannot contain its own hash, so it is announced there, not inside this file).
-Resolve and verify it yourself:
+The draw script is tagged **`draw-v1.2`** — the current release. It supersedes
+`draw-v1.1` (the draw was **rescheduled**: target moved from `514,900,000` to
+`518,150,000`, ~20 Aug 2026) and `draw-v1.0` (which had a resolver bug). The commit
+that `draw-v1.2` points to is the **`draw_script_commit`** bound into the seed. Its
+**full immutable hash is published in the `draw-v1.2` git tag annotation and the
+GitHub release** (a commit cannot contain its own hash, so it is announced there,
+not inside this file). Resolve and verify it yourself:
 
 ```bash
-git rev-list -n1 draw-v1.1     # prints the full 40-hex draw_script_commit
+git rev-list -n1 draw-v1.2     # prints the full 40-hex draw_script_commit
 ```
 
-Use exactly that hash as `DRAW_SCRIPT_COMMIT`. **Do not use `draw-v1.0`** — its
-commit `d13c057…` contains the pre-fix resolver.
+Use exactly that hash as `DRAW_SCRIPT_COMMIT`. **Do not use `draw-v1.1` or
+`draw-v1.0`** — `draw-v1.1` targets the old (rescheduled-away) `514,900,000`, and
+`draw-v1.0` (`d13c057…`) contains the pre-fix resolver.
 
 **After public commitment, corrections are not silent re-tags.** Once the list
 SHA-256, the draw-script commit, and the beacon target are published, an
@@ -166,9 +168,9 @@ node --test                     # run the draw test suite (41 tests, offline, ze
 # (draw) resolve the beacon on two DISTINCT kaspad endpoints, save each JSON,
 # then draw against both — the draw checks the two endpoints agree before running:
 cd vspc-beacon && cargo build --release && cd ..
-vspc-beacon/target/release/vspc-beacon --rpc grpc://<NODE_A>:16110 --target 514900000 --depth 4320 --json > att_a.json
-vspc-beacon/target/release/vspc-beacon --rpc grpc://<NODE_B>:16110 --target 514900000 --depth 4320 --json > att_b.json
-BEACON_ATTESTATIONS="att_a.json,att_b.json" DRAW_SCRIPT_COMMIT=<full commit hash of draw-v1.1> node draw.mjs
+vspc-beacon/target/release/vspc-beacon --rpc grpc://<NODE_A>:16110 --target 518150000 --depth 4320 --json > att_a.json
+vspc-beacon/target/release/vspc-beacon --rpc grpc://<NODE_B>:16110 --target 518150000 --depth 4320 --json > att_b.json
+BEACON_ATTESTATIONS="att_a.json,att_b.json" DRAW_SCRIPT_COMMIT=<full commit hash of draw-v1.2> node draw.mjs
 ```
 
 The draw's fairness-critical logic is tested in `draw.test.mjs` (41 tests): seed

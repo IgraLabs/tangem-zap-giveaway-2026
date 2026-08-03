@@ -66,7 +66,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 
 // ── Announced constants (fixed BEFORE the beacon block is mined) ────────────
 export const DOMAIN            = 'tangem-igra-zap-2026-draw-v1'; // seed domain separator
-export const BEACON_DAASCORE   = 514_900_000;   // announced target; beacon = first confirmed VSPC block with daaScore >= this
+export const BEACON_DAASCORE   = 518_150_000;   // announced target; beacon = first confirmed VSPC block with daaScore >= this
 export const CONFIRMATION_DEPTH = 4_320;        // DAA the beacon must sit below the sink (~7 min @ 10 bps) to be usable
 const WINNERS      = 10;
 const CSV_PATH     = 'eligible_wallets.csv';

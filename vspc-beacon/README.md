@@ -42,20 +42,20 @@ cargo build --release
 ## Run
 
 ```bash
-# The announced target for the draw is daaScore 514,900,000; depth 4320.
-vspc-beacon --rpc grpc://<KASPAD_HOST>:16110 --target 514900000 --depth 4320
+# The announced target for the draw is daaScore 518,150,000; depth 4320.
+vspc-beacon --rpc grpc://<KASPAD_HOST>:16110 --target 518150000 --depth 4320
 
 # machine-readable, for cross-node diffing:
-vspc-beacon --rpc grpc://<KASPAD_HOST>:16110 --target 514900000 --depth 4320 --json
+vspc-beacon --rpc grpc://<KASPAD_HOST>:16110 --target 518150000 --depth 4320 --json
 ```
 
 Run it against **two independently operated kaspad nodes** and confirm the
 `beacon_hash` is identical. Example output (`--json`):
 
 ```json
-{"rpc":"grpc://...","target":514900000,"beacon_hash":"<64-hex>",
- "beacon_daa_score":5149000xx,"beacon_blue_score":...,"sink_daa_score":...,
- "confirmation_gap":...,"depth":4320,"confirmed":true,"chain_len":...}
+{"rpc":"grpc://...","target":518150000,"beacon_hash":"<64-hex>",
+ "beacon_daa_score":5181500xx,"beacon_blue_score":...,"sink_daa_score":...,
+ "confirmation_gap":...,"depth":4320,"confirmed":true,"blocks_walked":...}
 ```
 
 ## Feeding the draw
