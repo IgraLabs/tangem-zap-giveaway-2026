@@ -149,6 +149,46 @@ async fn main() -> eyre::Result<()> {
     }
     let (beacon_daa, beacon_blue, beacon_hash) = daa_blue_at(&client, &hashes, lo).await?;
 
+    // POST-CONDITION (correctness guard). The leftmost binary search returns the
+    // chain-order-FIRST block with daaScore >= target, which is correct *iff* the
+    // accumulated chain's daaScore is non-decreasing. Two facts constrain this:
+    //   * daaScore(block) = daaScore(selected_parent) + (mergeset_size - non_daa),
+    //     and that added term is >= 0 — so along the VSPC daaScore is NON-DECREASING
+    //     (NOT strictly increasing: consecutive chain blocks CAN share a daaScore
+    //     when the added term is 0). So the correct check is `prev < target` OR
+    //     `prev == beacon_daa` (an equal-daaScore run straddling the boundary is
+    //     fine — leftmost still picks the chain-first one).
+    //   * a mid-walk reorg could splice a non-monotonic list; that we must catch.
+    // Prove: (a) the pick is >= target, and (b) the immediately preceding block is
+    // <= the pick (monotonic) and does not itself precede a smaller qualifying
+    // block (i.e. leftmost holds). Bail loudly on violation rather than return a
+    // silently-wrong beacon; the two-node agreement gate is the backstop.
+    if beacon_daa < args.target {
+        eyre::bail!(
+            "internal: selected block daaScore {} < target {} (chain changed mid-walk / reorg?); re-run",
+            beacon_daa, args.target
+        );
+    }
+    if lo > 0 {
+        let (prev_daa, _, _) = daa_blue_at(&client, &hashes, lo - 1).await?;
+        // Monotonic (non-decreasing) is required; a reorg could break it.
+        if prev_daa > beacon_daa {
+            eyre::bail!(
+                "internal: chain not monotonic at pick (prev daaScore {} > selected {}); reorg mid-walk? re-run",
+                prev_daa, beacon_daa
+            );
+        }
+        // Leftmost correctness: the block before must be strictly below target.
+        // (prev may EQUAL beacon_daa only if beacon_daa < target, which (a) already
+        // excluded — so at the boundary prev < target must hold.)
+        if prev_daa >= args.target {
+            eyre::bail!(
+                "internal: block before the selected one has daaScore {} >= target {} — search did not land leftmost (reorg mid-walk?); re-run",
+                prev_daa, args.target
+            );
+        }
+    }
+
     // 4. Confirmation.
     let confirmed = sink_daa >= beacon_daa.saturating_add(args.depth);
     let gap = sink_daa.saturating_sub(beacon_daa);
