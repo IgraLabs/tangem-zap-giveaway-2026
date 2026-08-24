@@ -173,6 +173,11 @@ vspc-beacon/target/release/vspc-beacon --rpc grpc://<NODE_B>:16110 --target 5181
 BEACON_ATTESTATIONS="att_a.json,att_b.json" DRAW_SCRIPT_COMMIT=<full commit hash of draw-v1.2> node draw.mjs
 ```
 
+Once the beacon falls behind Kaspa's consensus pruning point, the resolver needs an
+archival node and a `--from-block` start below the target, or the beacon can be
+confirmed from an archival explorer with no build at all. Both routes are in
+[`REPRODUCE.md`](./REPRODUCE.md#once-the-beacon-is-behind-the-pruning-point).
+
 The draw's fairness-critical logic is tested in `draw.test.mjs` (41 tests): seed
 derivation and shuffle are deterministic, index selection is unbiased
 (chi-square), a tampered or malformed list is rejected (wrong header, bad
