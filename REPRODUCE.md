@@ -71,6 +71,47 @@ vspc-beacon --rpc grpc://<NODE_A>:16110 --target 518150000 --depth 4320 --json >
 vspc-beacon --rpc grpc://<NODE_B>:16110 --target 518150000 --depth 4320 --json > att_b.json
 ```
 
+### Once the beacon is behind the pruning point
+
+Kaspa nodes prune. Some time after the draw the beacon target drops below the
+consensus pruning point, and the command above exits with *"target is below the
+earliest retained chain block"* on every node. The pruning point is a **consensus**
+value, identical on archival and pruned nodes alike, so trying more endpoints does
+not help.
+
+Two ways to confirm the beacon after that point:
+
+**A — any archival kaspad.** Pass `--from-block` with a chain block whose `daaScore`
+is below the target; the walk then starts there instead of at the pruning point. The
+resolver rejects a start that is not a chain block, or whose `daaScore` is at or
+above the target, since the "first block at or above target" result could not
+otherwise be proven.
+
+```bash
+vspc-beacon --rpc grpc://<ARCHIVAL_NODE>:16110 --target 518150000 --depth 4320 \
+  --from-block <CHAIN_BLOCK_BELOW_TARGET> --json > att_a.json
+```
+
+For this draw, `9c6affde6d223540365b865481e2746fcefb98e7cf8384b19601ddc0ae0898f9`
+(daaScore 518,146,595) is a suitable start block.
+
+**B — an archival explorer, no build.** Fetch the beacon and its selected parent:
+
+```bash
+curl -s "https://api.kaspa.org/blocks/<BEACON_HASH>?includeColor=false"
+curl -s "https://api.kaspa.org/blocks/<SELECTED_PARENT_HASH>?includeColor=false"
+```
+
+The beacon must be a chain block with `daaScore` at or above the target; its selected
+parent must be a chain block with `daaScore` below it. The virtual selected-parent
+chain is a linked list by selected parent, so the beacon's chain predecessor is
+exactly its selected parent — a parent below the target and the beacon at or above it
+means no chain block sits between them, which is what makes the beacon the first
+qualifying block.
+
+Route B confirms the beacon but produces no attestation file. Use the published
+attestations for Step 3 in that case.
+
 ## Step 2 — verify the candidate list
 
 ```bash
