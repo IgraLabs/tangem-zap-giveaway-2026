@@ -19,6 +19,7 @@ use clap::Parser;
 use kaspa_grpc_client::GrpcClient;
 use kaspa_rpc_core::api::rpc::RpcApi;
 use kaspa_rpc_core::RpcHash;
+use std::str::FromStr;
 
 #[derive(Parser)]
 #[command(about = "Resolve the first confirmed VSPC block with daaScore >= target")]
@@ -39,6 +40,15 @@ struct Args {
     /// Emit a compact one-line JSON summary (for cross-node diffing / scripting).
     #[arg(long)]
     json: bool,
+
+    /// Start the VSPC walk from this block hash instead of the consensus pruning
+    /// point. Needed once the target falls below the pruning point: the pruning
+    /// point is a consensus value identical on every node, so an archival node
+    /// alone does not restore the default walk. Requires a node that retains the
+    /// block. Must be a chain block with daaScore < target, or the "first block
+    /// >= target" result cannot be proven leftmost — both are enforced below.
+    #[arg(long)]
+    from_block: Option<String>,
 }
 
 #[tokio::main]
@@ -85,13 +95,43 @@ async fn main() -> eyre::Result<()> {
     async fn daa_of(client: &GrpcClient, h: RpcHash) -> eyre::Result<u64> {
         Ok(client.get_block(h, false).await?.header.daa_score)
     }
+    // Where the walk starts. Default: the consensus pruning point. With
+    // --from-block: an explicitly supplied ancestor, which an archival node can
+    // still serve after the target falls below the pruning point. Both
+    // preconditions are checked here so a bad start cannot yield a wrong beacon:
+    //   * the start must be a chain block (on the VSPC), else the forward walk
+    //     is not the selected-parent chain the beacon rule refers to;
+    //   * the start's daaScore must be < target, else the first block >= target
+    //     may lie BEFORE the start and the leftmost result would be wrong.
+    let walk_start = match &args.from_block {
+        None => pruning_point,
+        Some(h) => {
+            let h = RpcHash::from_str(h.trim())
+                .map_err(|e| eyre::eyre!("--from-block is not a valid block hash: {e}"))?;
+            let b = client.get_block(h, false).await.map_err(|e| {
+                eyre::eyre!("--from-block {h} not served by this node (needs an archival node retaining it): {e}")
+            })?;
+            let is_chain = b.verbose_data.as_ref().map(|v| v.is_chain_block).unwrap_or(false);
+            if !is_chain {
+                eyre::bail!("--from-block {h} is not a chain block (not on the VSPC); pick a chain block below the target");
+            }
+            if b.header.daa_score >= args.target {
+                eyre::bail!(
+                    "--from-block {h} has daaScore {} >= target {} — the first block at or above the target could precede it, so the leftmost result would not be proven; pick an earlier chain block",
+                    b.header.daa_score, args.target
+                );
+            }
+            h
+        }
+    };
+
     let mut hashes: Vec<RpcHash> = Vec::new();
     let mut bracketed;
     let mut reorg_restarts = 0u32;
     'walk: loop {
         hashes.clear();
         bracketed = false;
-        let mut walk = pruning_point;
+        let mut walk = walk_start;
         // Bound per-pass pages generously; ~2480/page over a 30-day chain < ~11k pages.
         for _page in 0..100_000u32 {
             let resp = client.get_virtual_chain_from_block(walk, false, None).await?;
@@ -126,14 +166,17 @@ async fn main() -> eyre::Result<()> {
         break; // completed a full pass with no reorg
     }
     if hashes.is_empty() {
-        eyre::bail!("empty virtual chain from pruning point {pruning_point}");
+        eyre::bail!("empty virtual chain from start block {walk_start}");
     }
 
     // The earliest retained chain block: if the target is below it, it is pruned.
     let first_daa = daa_of(&client, hashes[0]).await?;
     if args.target < first_daa {
         eyre::bail!(
-            "target {} is below the earliest retained chain block daaScore {} (pruned); pick a higher target",
+            "target {} is below the earliest walked chain block daaScore {} (target is behind the pruning point). \
+             The pruning point is a consensus value, so switching nodes does not help on its own. \
+             Use an ARCHIVAL node that still retains the era and pass --from-block <chain block hash with daaScore < target> \
+             to start the walk below the pruning point.",
             args.target, first_daa
         );
     }
@@ -218,14 +261,20 @@ async fn main() -> eyre::Result<()> {
 
     if args.json {
         println!(
-            "{{\"rpc\":\"{}\",\"target\":{},\"beacon_hash\":\"{}\",\"beacon_daa_score\":{},\"beacon_blue_score\":{},\"sink_daa_score\":{},\"virtual_daa_score\":{},\"confirmation_gap\":{},\"depth\":{},\"confirmed\":{},\"blocks_walked\":{}}}",
+            "{{\"rpc\":\"{}\",\"target\":{},\"beacon_hash\":\"{}\",\"beacon_daa_score\":{},\"beacon_blue_score\":{},\"sink_daa_score\":{},\"virtual_daa_score\":{},\"confirmation_gap\":{},\"depth\":{},\"confirmed\":{},\"blocks_walked\":{},\"walk_start\":\"{}\",\"walk_start_is_pruning_point\":{}}}",
             args.rpc, args.target, beacon_hash, beacon_daa, beacon_blue,
-            sink_daa, virtual_daa, gap, args.depth, confirmed, hashes.len()
+            sink_daa, virtual_daa, gap, args.depth, confirmed, hashes.len(),
+            walk_start, args.from_block.is_none()
         );
     } else {
         println!("node                : {}", args.rpc);
         println!("target daaScore     : {}", args.target);
-        println!("VSPC blocks walked  : {} (pruning_point -> first block >= target, paginated)", hashes.len());
+        println!(
+            "walk start          : {} ({})",
+            walk_start,
+            if args.from_block.is_none() { "consensus pruning point" } else { "--from-block, archival" }
+        );
+        println!("VSPC blocks walked  : {} (walk start -> first block >= target, paginated)", hashes.len());
         println!("--- beacon (first VSPC block with daaScore >= target) ---");
         println!("beacon hash         : {}", beacon_hash);
         println!("beacon daaScore     : {}", beacon_daa);
